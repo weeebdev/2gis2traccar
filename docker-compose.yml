@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  2gis2traccar:
+    build: .
+    container_name: 2gis2traccar
+    restart: unless-stopped
+    environment:
+      # Load all configuration from .env file
+      - TWOGIS_WS_URL=${TWOGIS_WS_URL}
+      - TRACCAR_BASE_URL=${TRACCAR_BASE_URL}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE=${LOG_FILE:-2gis2traccar.log}
+      - RECONNECT_DELAY=${RECONNECT_DELAY:-30}
+      - MAX_RECONNECT_ATTEMPTS=${MAX_RECONNECT_ATTEMPTS:-10}
+    volumes:
+      # Mount logs directory for persistence
+      - ./logs:/app/logs
+      # Mount config file for easy editing
+      - ./config.py:/app/config.py
+    networks:
+      - 2gis2traccar_network
+    # Uncomment if you need to expose ports
+    # ports:
+    #   - "8080:8080"
+
+networks:
+  2gis2traccar_network:
+    driver: bridge
