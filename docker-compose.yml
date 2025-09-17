@@ -17,7 +17,7 @@ services:
       # Mount logs directory for persistence
       - ./logs:/app/logs
       # Mount config file for easy editing
-      - ./config.py:/app/config.py
+      # - ./config.py:/app/config.py
     networks:
       - 2gis2traccar_network
     # Uncomment if you need to expose ports
