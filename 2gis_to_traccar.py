@@ -48,7 +48,8 @@ class TraccarClient:
     
     async def send_position(self, device_id: str, lat: float, lon: float, 
                           speed: Optional[float] = None, course: Optional[float] = None,
-                          accuracy: Optional[float] = None, battery: Optional[float] = None) -> bool:
+                          accuracy: Optional[float] = None, battery: Optional[float] = None,
+                          is_charging: Optional[bool] = None) -> bool:
         """Send position data to Traccar using OsmAnd protocol"""
         if not self.session:
             logger.error("Traccar session not initialized")
@@ -81,6 +82,10 @@ class TraccarClient:
         # Add battery level if available (OsmAnd uses 'batt' parameter)
         if battery is not None:
             params['batt'] = int(battery * 100)  # Convert to percentage
+            
+        # Add charging status if available (OsmAnd uses 'charging' parameter)
+        if is_charging is not None:
+            params['charging'] = 'true' if is_charging else 'false'
         
         try:
             # Log the request for debugging
@@ -148,6 +153,7 @@ class TwoGISWebSocketClient:
                     course = location.get("azimuth")
                     accuracy = location.get("accuracy")
                     battery_level = battery.get("level")
+                    is_charging = battery.get("isCharging")
                     
                     # Convert speed from m/s to km/h if provided
                     if speed is not None:
@@ -161,11 +167,13 @@ class TwoGISWebSocketClient:
                         speed=speed,
                         course=course,
                         accuracy=accuracy,
-                        battery=battery_level
+                        battery=battery_level,
+                        is_charging=is_charging
                     )
                     
                     if success:
-                        logger.info(f"Processed location for {device_id}: {lat}, {lon} (battery: {battery_level})")
+                        charging_status = "charging" if is_charging else "not charging" if is_charging is not None else "unknown"
+                        logger.info(f"Processed location for {device_id}: {lat}, {lon} (battery: {battery_level}, {charging_status})")
                     else:
                         logger.warning(f"Failed to send location for {device_id}: {lat}, {lon}")
                 else:
