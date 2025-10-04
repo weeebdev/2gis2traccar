@@ -9,6 +9,9 @@ services:
       # Load all configuration from .env file
       - TWOGIS_WS_URL=${TWOGIS_WS_URL}
       - TRACCAR_BASE_URL=${TRACCAR_BASE_URL}
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      - WEBHOOK_TOKEN=${WEBHOOK_TOKEN}
+      - WEBHOOK_TABLE_NAME=${WEBHOOK_TABLE_NAME:-2gis_locations}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOG_FILE=${LOG_FILE:-2gis2traccar.log}
       - RECONNECT_DELAY=${RECONNECT_DELAY:-30}

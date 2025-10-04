@@ -16,7 +16,8 @@ import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from config import (
-    TWOGIS_WS_URL, TRACCAR_BASE_URL, LOG_LEVEL, LOG_FILE
+    TWOGIS_WS_URL, TRACCAR_BASE_URL, LOG_LEVEL, LOG_FILE,
+    WEBHOOK_URL, WEBHOOK_TOKEN, WEBHOOK_TABLE_NAME
 )
 
 # Setup logging
@@ -114,12 +115,73 @@ class TraccarClient:
             return False
 
 
+class WebhookClient:
+    """Client for sending data to n8n webhook endpoint"""
+    
+    def __init__(self, webhook_url: str, webhook_token: str, table_name: str):
+        self.webhook_url = webhook_url
+        self.webhook_token = webhook_token
+        self.table_name = table_name
+        self.session = None
+    
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+    
+    async def send_data(self, data: Dict[str, Any]) -> bool:
+        """Send data to webhook endpoint"""
+        if not self.session:
+            logger.error("Webhook session not initialized")
+            return False
+        
+        if not self.webhook_url or not self.webhook_token:
+            logger.debug("Webhook not configured, skipping webhook send")
+            return True
+        
+        # Prepare the payload
+        payload = {
+            "tableName": self.table_name,
+            "data": data
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {self.webhook_token}",
+            "Content-Type": "application/json"
+        }
+        
+        try:
+            logger.debug(f"Sending webhook data to: {self.webhook_url}")
+            logger.debug(f"Payload: {payload}")
+            
+            async with self.session.post(
+                self.webhook_url,
+                json=payload,
+                headers=headers
+            ) as response:
+                response_text = await response.text()
+                if response.status == 200:
+                    logger.info(f"Data sent to webhook successfully")
+                    return True
+                else:
+                    logger.error(f"Failed to send data to webhook: {response.status} - {response_text}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"Error sending data to webhook: {e}")
+            return False
+
+
 class TwoGISWebSocketClient:
     """Client for connecting to 2GIS WebSocket"""
     
-    def __init__(self, ws_url: str, traccar_client: TraccarClient):
+    def __init__(self, ws_url: str, traccar_client: TraccarClient, webhook_client: Optional[WebhookClient] = None):
         self.ws_url = ws_url
         self.traccar_client = traccar_client
+        self.webhook_client = webhook_client
         self.websocket = None
         self.running = False
     
@@ -184,6 +246,34 @@ class TwoGISWebSocketClient:
                         movement_status = "moving" if is_moving else "stopped" if is_moving is not None else "unknown"
                         speed_info = f"speed: {speed:.1f} km/h" if speed is not None else "speed: unknown"
                         logger.info(f"Processed location for {device_id}: {lat}, {lon} (battery: {battery_level}, {charging_status}, {movement_status}, {speed_info})")
+                        
+                        # Send data to webhook if configured
+                        if self.webhook_client:
+                            webhook_data = {
+                                "device_id": device_id,
+                                "friend_id": friend_id,
+                                "timestamp": datetime.utcnow().isoformat(),
+                                "location": {
+                                    "lat": lat,
+                                    "lon": lon,
+                                    "speed": speed,
+                                    "course": course,
+                                    "accuracy": accuracy
+                                },
+                                "battery": {
+                                    "level": battery_level,
+                                    "is_charging": is_charging
+                                },
+                                "movement": {
+                                    "status": movement_status,
+                                    "is_moving": is_moving
+                                },
+                                "raw_payload": payload  # Include the original 2GIS payload
+                            }
+                            
+                            webhook_success = await self.webhook_client.send_data(webhook_data)
+                            if not webhook_success:
+                                logger.warning(f"Failed to send data to webhook for {device_id}")
                     else:
                         logger.warning(f"Failed to send location for {device_id}: {lat}, {lon}")
                 else:
@@ -231,19 +321,42 @@ async def main():
     """Main function"""
     logger.info("Starting 2GIS to Traccar bridge...")
     
+    # Initialize webhook client if configured
+    webhook_client = None
+    if WEBHOOK_URL and WEBHOOK_TOKEN:
+        webhook_client = WebhookClient(WEBHOOK_URL, WEBHOOK_TOKEN, WEBHOOK_TABLE_NAME)
+        logger.info(f"Webhook configured: {WEBHOOK_URL} (table: {WEBHOOK_TABLE_NAME})")
+    else:
+        logger.info("Webhook not configured, skipping webhook functionality")
+    
     # Initialize Traccar client (no authentication needed with OsmAnd protocol)
     async with TraccarClient(TRACCAR_BASE_URL) as traccar_client:
-        # Initialize and run 2GIS WebSocket client
-        client = TwoGISWebSocketClient(TWOGIS_WS_URL, traccar_client)
-        
-        # Keep trying to connect and run
-        while True:
-            try:
-                await client.run()
-            except Exception as e:
-                logger.error(f"Error in main loop: {e}")
-                logger.info("Retrying in 30 seconds...")
-                await asyncio.sleep(30)
+        # Initialize webhook client if configured
+        if webhook_client:
+            async with webhook_client:
+                # Initialize and run 2GIS WebSocket client
+                client = TwoGISWebSocketClient(TWOGIS_WS_URL, traccar_client, webhook_client)
+                
+                # Keep trying to connect and run
+                while True:
+                    try:
+                        await client.run()
+                    except Exception as e:
+                        logger.error(f"Error in main loop: {e}")
+                        logger.info("Retrying in 30 seconds...")
+                        await asyncio.sleep(30)
+        else:
+            # Initialize and run 2GIS WebSocket client without webhook
+            client = TwoGISWebSocketClient(TWOGIS_WS_URL, traccar_client)
+            
+            # Keep trying to connect and run
+            while True:
+                try:
+                    await client.run()
+                except Exception as e:
+                    logger.error(f"Error in main loop: {e}")
+                    logger.info("Retrying in 30 seconds...")
+                    await asyncio.sleep(30)
 
 
 if __name__ == "__main__":

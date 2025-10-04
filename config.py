@@ -42,3 +42,8 @@ LOG_FILE = os.getenv("LOG_FILE", "2gis2traccar.log")
 # Reconnection settings
 RECONNECT_DELAY = int(os.getenv("RECONNECT_DELAY", "30"))  # seconds
 MAX_RECONNECT_ATTEMPTS = int(os.getenv("MAX_RECONNECT_ATTEMPTS", "10"))
+
+# Webhook Configuration (optional)
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN")
+WEBHOOK_TABLE_NAME = os.getenv("WEBHOOK_TABLE_NAME", "2gis_locations")

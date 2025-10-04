@@ -7,6 +7,7 @@ This Python script connects to the 2GIS WebSocket API, receives real-time locati
 - Connects to 2GIS WebSocket API for real-time location updates
 - Parses friendState messages with location, battery, and movement data
 - Forwards location data to Traccar using OsmAnd protocol (same as Traccar Client)
+- **Webhook support** - sends data to n8n or other webhook endpoints
 - **No authentication required** - uses native Traccar protocol
 - Comprehensive error handling and logging
 - Automatic reconnection on connection failures
@@ -36,6 +37,11 @@ TWOGIS_WS_URL=wss://zond.api.2gis.ru/api/1.1/user/ws?appVersion=6.31.0&channels=
 
 # REQUIRED: Traccar server URL
 TRACCAR_BASE_URL=http://your-traccar-server:5055
+
+# Optional: Webhook Configuration
+WEBHOOK_URL=webhook_url
+WEBHOOK_TOKEN=your_bearer_token_here
+WEBHOOK_TABLE_NAME=2gis_locations
 
 # Optional: Logging level
 LOG_LEVEL=INFO
@@ -81,9 +87,10 @@ python 2gis_to_traccar.py
 The script will:
 1. Connect to the 2GIS WebSocket
 2. Listen for `friendState` messages containing location data
-3. Extract the friend ID and use it as device ID with "2gis_" prefix
+3. Extract the friend ID and use it as device ID
 4. Extract location coordinates, speed, battery level, and other data
 5. Send the data to your Traccar server using OsmAnd protocol (HTTP GET with query parameters)
+6. **Send the same data to your webhook endpoint** (if configured)
 
 ## Data Mapping
 
@@ -94,8 +101,46 @@ The script maps 2GIS data to OsmAnd protocol format:
 - **Course**: Uses `azimuth` field as `bearing` parameter
 - **Battery**: Maps to OsmAnd `batt` parameter (percentage)
 - **Accuracy**: Preserves accuracy data
-- **Device ID**: Uses `2gis_{friend_id}` format
+- **Device ID**: Uses `{friend_id}` format
 - **Movement Status**: Logged but not sent to Traccar
+
+## Webhook Data Format
+
+When webhook is configured, the script sends data in the following format:
+
+```json
+{
+  "tableName": "2gis_locations",
+  "data": {
+    "device_id": "friend_123",
+    "friend_id": "friend_123",
+    "timestamp": "2024-01-15T10:30:00.000Z",
+    "location": {
+      "lat": 55.7558,
+      "lon": 37.6176,
+      "speed": 25.5,
+      "course": 180.0,
+      "accuracy": 10.0
+    },
+    "battery": {
+      "level": 0.85,
+      "is_charging": false
+    },
+    "movement": {
+      "status": "moving",
+      "is_moving": true
+    },
+    "raw_payload": {
+      // Original 2GIS payload data
+    }
+  }
+}
+```
+
+The webhook request includes:
+- **Authorization**: `Bearer {WEBHOOK_TOKEN}`
+- **Content-Type**: `application/json`
+- **Body**: JSON with `tableName` and `data` fields
 
 ## Docker Commands
 
@@ -127,6 +172,9 @@ docker-compose build && docker-compose up -d
 |----------|----------|---------|-------------|
 | `TWOGIS_WS_URL` | ✅ Yes | - | 2GIS WebSocket URL with authentication token |
 | `TRACCAR_BASE_URL` | ✅ Yes | - | Traccar server URL with OsmAnd port |
+| `WEBHOOK_URL` | ❌ No | - | Webhook endpoint URL for sending data |
+| `WEBHOOK_TOKEN` | ❌ No | - | Bearer token for webhook authentication |
+| `WEBHOOK_TABLE_NAME` | ❌ No | `2gis_locations` | Table name for webhook data |
 | `LOG_LEVEL` | ❌ No | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `LOG_FILE` | ❌ No | `2gis2traccar.log` | Log file name |
 | `RECONNECT_DELAY` | ❌ No | `30` | Reconnection delay in seconds |
