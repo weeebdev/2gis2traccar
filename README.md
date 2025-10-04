@@ -106,32 +106,29 @@ The script maps 2GIS data to OsmAnd protocol format:
 
 ## Webhook Data Format
 
-When webhook is configured, the script sends data in the following format:
+When webhook is configured, the script sends the **raw 2GIS data** immediately after parsing the JSON message:
 
 ```json
 {
   "tableName": "2gis_locations",
   "data": {
-    "device_id": "friend_123",
-    "friend_id": "friend_123",
-    "timestamp": "2024-01-15T10:30:00.000Z",
-    "location": {
-      "lat": 55.7558,
-      "lon": 37.6176,
-      "speed": 25.5,
-      "course": 180.0,
-      "accuracy": 10.0
-    },
-    "battery": {
-      "level": 0.85,
-      "is_charging": false
-    },
-    "movement": {
-      "status": "moving",
-      "is_moving": true
-    },
-    "raw_payload": {
-      // Original 2GIS payload data
+    "type": "friendState",
+    "payload": {
+      "id": "friend_123",
+      "location": {
+        "lat": 55.7558,
+        "lon": 37.6176,
+        "speed": 7.08,
+        "azimuth": 180.0,
+        "accuracy": 10.0
+      },
+      "battery": {
+        "level": 0.85,
+        "isCharging": false
+      },
+      "movement": {
+        "status": "moving"
+      }
     }
   }
 }
@@ -140,7 +137,7 @@ When webhook is configured, the script sends data in the following format:
 The webhook request includes:
 - **Authorization**: `Bearer {WEBHOOK_TOKEN}`
 - **Content-Type**: `application/json`
-- **Body**: JSON with `tableName` and `data` fields
+- **Body**: JSON with `tableName` and raw `data` from 2GIS
 
 ## Docker Commands
 

@@ -142,7 +142,7 @@ class WebhookClient:
             logger.debug("Webhook not configured, skipping webhook send")
             return True
         
-        # Prepare the payload
+        # Prepare the payload - send raw 2GIS data directly
         payload = {
             "tableName": self.table_name,
             "data": data
@@ -207,9 +207,15 @@ class TwoGISWebSocketClient:
                 location = payload.get("location")
                 battery = payload.get("battery", {})
                 movement = payload.get("movement", {})
+
+                # Send raw data to webhook immediately after parsing
+                if self.webhook_client:
+                    webhook_success = await self.webhook_client.send_data(data)
+                    if not webhook_success:
+                        logger.warning("Failed to send data to webhook")
                 
                 if friend_id and location and "lat" in location and "lon" in location:
-                    # Use 2GIS friend ID as device ID with prefix
+                    # Use 2GIS friend ID as device ID
                     device_id = f"{friend_id}"
                     
                     lat = location["lat"]
@@ -246,34 +252,6 @@ class TwoGISWebSocketClient:
                         movement_status = "moving" if is_moving else "stopped" if is_moving is not None else "unknown"
                         speed_info = f"speed: {speed:.1f} km/h" if speed is not None else "speed: unknown"
                         logger.info(f"Processed location for {device_id}: {lat}, {lon} (battery: {battery_level}, {charging_status}, {movement_status}, {speed_info})")
-                        
-                        # Send data to webhook if configured
-                        if self.webhook_client:
-                            webhook_data = {
-                                "device_id": device_id,
-                                "friend_id": friend_id,
-                                "timestamp": datetime.utcnow().isoformat(),
-                                "location": {
-                                    "lat": lat,
-                                    "lon": lon,
-                                    "speed": speed,
-                                    "course": course,
-                                    "accuracy": accuracy
-                                },
-                                "battery": {
-                                    "level": battery_level,
-                                    "is_charging": is_charging
-                                },
-                                "movement": {
-                                    "status": movement_status,
-                                    "is_moving": is_moving
-                                },
-                                "raw_payload": payload  # Include the original 2GIS payload
-                            }
-                            
-                            webhook_success = await self.webhook_client.send_data(webhook_data)
-                            if not webhook_success:
-                                logger.warning(f"Failed to send data to webhook for {device_id}")
                     else:
                         logger.warning(f"Failed to send location for {device_id}: {lat}, {lon}")
                 else:
