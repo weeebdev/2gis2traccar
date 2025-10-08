@@ -97,7 +97,8 @@ class TraccarClient:
                 },
                 "extras": extras if extras is not None else {}
             },
-            "device_id": device_id
+            "device_id": device_id,
+            "test": "Hello world"
         }
         
         try:
