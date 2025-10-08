@@ -254,7 +254,16 @@ class TwoGISWebSocketClient:
                         extras["2gis_lastSeen"] = last_seen_dt.isoformat() + "Z"
                     
                     if "locationPlace" in payload:
-                        extras["2gis_locationPlace"] = payload["locationPlace"]
+                        location_place = payload["locationPlace"]
+                        # Add flattened location place data
+                        if "object" in location_place and "id" in location_place["object"]:
+                            location_id = location_place["object"]["id"]
+                            extras["2gis_locationId"] = location_id
+                            extras["2gis_locationUrl"] = f"https://2gis.kz/almaty/firm/{location_id}"
+                        if "object" in location_place and "regionId" in location_place["object"]:
+                            extras["2gis_regionId"] = location_place["object"]["regionId"]
+                        if "status" in location_place:
+                            extras["2gis_locationStatus"] = location_place["status"]
                     
                     # Add stoppedAt timestamp if available in movement data
                     if movement and "stoppedAt" in movement and movement["stoppedAt"] is not None:

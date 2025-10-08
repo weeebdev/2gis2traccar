@@ -106,7 +106,10 @@ The script maps 2GIS data to OsmAnd JSON protocol format:
 - **Extras**: Optimized to include only unique 2GIS data not already used in main structure:
   - `2gis_lastSeen`: Last seen timestamp (ISO format)
   - `2gis_stoppedAt`: When movement stopped (ISO format)
-  - `2gis_locationPlace`: Location place information
+  - `2gis_locationId`: Location place ID
+  - `2gis_locationUrl`: Direct 2GIS URL to the location
+  - `2gis_regionId`: Region ID
+  - `2gis_locationStatus`: Location status
 
 ## OsmAnd JSON Format
 
@@ -137,13 +140,10 @@ The script sends data to Traccar using the OsmAnd JSON format as specified in th
     "extras": {
       "2gis_lastSeen": "2024-01-01T12:00:00.000Z",
       "2gis_stoppedAt": "2024-01-01T11:30:00.000Z",
-      "2gis_locationPlace": {
-        "object": {
-          "id": "70000001061605468",
-          "regionId": "67"
-        },
-        "status": null
-      }
+      "2gis_locationId": "70000001061605468",
+      "2gis_locationUrl": "https://2gis.kz/almaty/firm/70000001061605468",
+      "2gis_regionId": "67",
+      "2gis_locationStatus": null
     }
   },
   "device_id": "friend_123"
