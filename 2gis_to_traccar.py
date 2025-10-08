@@ -224,7 +224,7 @@ class TwoGISWebSocketClient:
                     if not webhook_success:
                         logger.warning("Failed to send data to webhook")
                 
-                if friend_id and location and "lat" in location and "lon" in location:
+                if friend_id and location and isinstance(location, dict) and "lat" in location and "lon" in location:
                     # Use 2GIS friend ID as device ID
                     device_id = f"{friend_id}"
                     
@@ -256,14 +256,15 @@ class TwoGISWebSocketClient:
                     if "locationPlace" in payload:
                         location_place = payload["locationPlace"]
                         # Add flattened location place data
-                        if "object" in location_place and "id" in location_place["object"]:
-                            location_id = location_place["object"]["id"]
-                            extras["2gis_locationId"] = location_id
-                            extras["2gis_locationUrl"] = f"https://2gis.kz/almaty/firm/{location_id}"
-                        if "object" in location_place and "regionId" in location_place["object"]:
-                            extras["2gis_regionId"] = location_place["object"]["regionId"]
-                        if "status" in location_place:
-                            extras["2gis_locationStatus"] = location_place["status"]
+                        if location_place and isinstance(location_place, dict):
+                            if "object" in location_place and location_place["object"] and isinstance(location_place["object"], dict) and "id" in location_place["object"]:
+                                location_id = location_place["object"]["id"]
+                                extras["2gis_locationId"] = location_id
+                                extras["2gis_locationUrl"] = f"https://2gis.kz/almaty/firm/{location_id}"
+                            if "object" in location_place and location_place["object"] and isinstance(location_place["object"], dict) and "regionId" in location_place["object"]:
+                                extras["2gis_regionId"] = location_place["object"]["regionId"]
+                            if "status" in location_place:
+                                extras["2gis_locationStatus"] = location_place["status"]
                     
                     # Add stoppedAt timestamp if available in movement data
                     if movement and "stoppedAt" in movement and movement["stoppedAt"] is not None:
