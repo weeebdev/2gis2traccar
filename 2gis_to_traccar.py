@@ -47,59 +47,69 @@ class TraccarClient:
         if self.session:
             await self.session.close()
     
+    def _map_movement_to_activity(self, movement_status: Optional[str], is_moving: Optional[bool]) -> str:
+        """Map 2GIS movement status to OsmAnd activity type"""
+        if movement_status == "stopped":
+            return "still"
+        elif movement_status == "moving":
+            return "in_vehicle"
+        elif is_moving is not None:
+            return "in_vehicle" if is_moving else "still"
+        else:
+            return "still"  # Default
+    
     async def send_position(self, device_id: str, lat: float, lon: float, 
                           speed: Optional[float] = None, course: Optional[float] = None,
                           accuracy: Optional[float] = None, battery: Optional[float] = None,
-                          is_charging: Optional[bool] = None, is_moving: Optional[bool] = None) -> bool:
-        """Send position data to Traccar using OsmAnd protocol"""
+                          is_charging: Optional[bool] = None, is_moving: Optional[bool] = None,
+                          movement_status: Optional[str] = None, extras: Optional[Dict[str, Any]] = None) -> bool:
+        """Send position data to Traccar using OsmAnd POST protocol with JSON format"""
         if not self.session:
             logger.error("Traccar session not initialized")
             return False
         
-        # Convert speed from km/h to knots (OsmAnd protocol uses knots by default)
-        speed_knots = None
+        # Convert speed from km/h to m/s (OsmAnd JSON format uses m/s)
+        speed_ms = None
         if speed is not None:
-            speed_knots = speed * 0.539957  # km/h to knots conversion
+            speed_ms = speed / 3.6  # km/h to m/s conversion
         
-        # Prepare OsmAnd protocol parameters
-        params = {
-            'id': device_id,
-            'lat': lat,
-            'lon': lon,
-            'timestamp': int(datetime.utcnow().timestamp()),
-            'valid': 'true'  # Mark location as valid
+        # Prepare OsmAnd JSON format payload
+        payload = {
+            "location": {
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "coords": {
+                    "latitude": lat,
+                    "longitude": lon,
+                    "accuracy": accuracy if accuracy is not None else 0,
+                    "speed": speed_ms if speed_ms is not None else 0,
+                    "heading": course if course is not None else 0,
+                    "altitude": 0  # 2GIS doesn't provide altitude
+                },
+                "is_moving": is_moving if is_moving is not None else False,
+                "odometer": 0,  # 2GIS doesn't provide odometer
+                "event": "motionchange",  # Default event type
+                "battery": {
+                    "level": battery if battery is not None else 1,
+                    "is_charging": is_charging if is_charging is not None else False
+                },
+                "activity": {
+                    "type": self._map_movement_to_activity(movement_status, is_moving)
+                },
+                "extras": extras if extras is not None else {}
+            },
+            "device_id": device_id
         }
-        
-        # Add optional parameters only if they have meaningful values
-        if speed_knots is not None and speed_knots > 0:
-            params['speed'] = speed_knots
-            
-        if course is not None:
-            params['bearing'] = course
-            
-        if accuracy is not None and accuracy > 0:
-            params['accuracy'] = accuracy
-            
-        # Add battery level if available (OsmAnd uses 'batt' parameter)
-        if battery is not None:
-            params['batt'] = int(battery * 100)  # Convert to percentage
-            
-        # Add charging status if available (OsmAnd uses 'charging' parameter)
-        if is_charging is not None:
-            params['charging'] = 'true' if is_charging else 'false'
-            
-        # Note: OsmAnd GET format doesn't support 'moving' parameter
-        # Movement is inferred from speed parameter (non-zero = moving, zero = stopped)
         
         try:
             # Log the request for debugging
-            logger.debug(f"Sending OsmAnd request to: {self.base_url}")
-            logger.debug(f"Parameters: {params}")
+            logger.debug(f"Sending OsmAnd POST request to: {self.base_url}")
+            logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
             
-            # Send GET request to Traccar OsmAnd endpoint (no /api/osmand needed)
-            async with self.session.get(
+            # Send POST request to Traccar OsmAnd endpoint
+            async with self.session.post(
                 self.base_url,
-                params=params
+                json=payload,
+                headers={"Content-Type": "application/json"}
             ) as response:
                 response_text = await response.text()
                 if response.status == 200:
@@ -234,6 +244,23 @@ class TwoGISWebSocketClient:
                     if speed is not None:
                         speed = speed * 3.6
                     
+                    # Prepare extras with additional 2GIS data not present in main structure
+                    extras = {}
+                    
+                    # Add additional 2GIS payload fields not in main structure
+                    if "lastSeen" in payload and payload["lastSeen"] is not None:
+                        # Convert timestamp to ISO format
+                        last_seen_dt = datetime.fromtimestamp(payload["lastSeen"] / 1000)
+                        extras["2gis_lastSeen"] = last_seen_dt.isoformat() + "Z"
+                    
+                    if "locationPlace" in payload:
+                        extras["2gis_locationPlace"] = payload["locationPlace"]
+                    
+                    # Add stoppedAt timestamp if available in movement data
+                    if movement and "stoppedAt" in movement and movement["stoppedAt"] is not None:
+                        stopped_at_dt = datetime.fromtimestamp(movement["stoppedAt"] / 1000)
+                        extras["2gis_stoppedAt"] = stopped_at_dt.isoformat() + "Z"
+                    
                     # Send to Traccar
                     success = await self.traccar_client.send_position(
                         device_id=device_id,
@@ -244,7 +271,9 @@ class TwoGISWebSocketClient:
                         accuracy=accuracy,
                         battery=battery_level,
                         is_charging=is_charging,
-                        is_moving=is_moving
+                        is_moving=is_moving,
+                        movement_status=movement_status,
+                        extras=extras
                     )
                     
                     if success:

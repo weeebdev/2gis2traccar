@@ -89,20 +89,66 @@ The script will:
 2. Listen for `friendState` messages containing location data
 3. Extract the friend ID and use it as device ID
 4. Extract location coordinates, speed, battery level, and other data
-5. Send the data to your Traccar server using OsmAnd protocol (HTTP GET with query parameters)
+5. Send the data to your Traccar server using OsmAnd protocol (HTTP POST with JSON format)
 6. **Send the same data to your webhook endpoint** (if configured)
 
 ## Data Mapping
 
-The script maps 2GIS data to OsmAnd protocol format:
+The script maps 2GIS data to OsmAnd JSON protocol format:
 
-- **Location**: `lat`/`lon` → OsmAnd `lat`/`lon` parameters
-- **Speed**: Converts from m/s to km/h, then to knots (OsmAnd standard)
-- **Course**: Uses `azimuth` field as `bearing` parameter
-- **Battery**: Maps to OsmAnd `batt` parameter (percentage)
-- **Accuracy**: Preserves accuracy data
-- **Device ID**: Uses `{friend_id}` format
-- **Movement Status**: Logged but not sent to Traccar
+- **Location**: `lat`/`lon` → OsmAnd `coords.latitude`/`coords.longitude`
+- **Speed**: Converts from m/s to km/h, then to m/s (OsmAnd JSON standard)
+- **Course**: Uses `azimuth` field as `coords.heading`
+- **Battery**: Maps to OsmAnd `battery.level` (decimal 0-1) and `battery.is_charging`
+- **Accuracy**: Preserves accuracy data in `coords.accuracy`
+- **Device ID**: Uses `{friend_id}` format as `device_id`
+- **Movement Status**: Maps to `is_moving` boolean field and `activity.type` ("still" for stopped, "in_vehicle" for moving)
+- **Extras**: Optimized to include only unique 2GIS data not already used in main structure:
+  - `2gis_lastSeen`: Last seen timestamp (ISO format)
+  - `2gis_stoppedAt`: When movement stopped (ISO format)
+  - `2gis_locationPlace`: Location place information
+
+## OsmAnd JSON Format
+
+The script sends data to Traccar using the OsmAnd JSON format as specified in the [Traccar documentation](https://www.traccar.org/osmand/):
+
+```json
+{
+  "location": {
+    "timestamp": "2024-01-01T12:00:00.000Z",
+    "coords": {
+      "latitude": 55.7558,
+      "longitude": 37.6176,
+      "accuracy": 10.0,
+      "speed": 1.97,
+      "heading": 180.0,
+      "altitude": 0
+    },
+    "is_moving": true,
+    "odometer": 0,
+    "event": "motionchange",
+    "battery": {
+      "level": 0.85,
+      "is_charging": false
+    },
+    "activity": {
+      "type": "in_vehicle"
+    },
+    "extras": {
+      "2gis_lastSeen": "2024-01-01T12:00:00.000Z",
+      "2gis_stoppedAt": "2024-01-01T11:30:00.000Z",
+      "2gis_locationPlace": {
+        "object": {
+          "id": "70000001061605468",
+          "regionId": "67"
+        },
+        "status": null
+      }
+    }
+  },
+  "device_id": "friend_123"
+}
+```
 
 ## Webhook Data Format
 
@@ -213,9 +259,10 @@ The script creates detailed logs in:
 
 ### Common Issues
 
-1. **400 Bad Request**: Check that your Traccar server has OsmAnd protocol enabled
+1. **400 Bad Request**: Check that your Traccar server has OsmAnd protocol enabled and supports JSON format (Traccar 6.7.0+)
 2. **Connection Refused**: Verify the Traccar server URL and port (usually 5055)
 3. **WebSocket Connection Failed**: Check the 2GIS token in the WebSocket URL
+4. **JSON Format Error**: Ensure your Traccar server supports OsmAnd JSON format (not just query parameters)
 
 ### Debug Mode
 
