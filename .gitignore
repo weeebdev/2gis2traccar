@@ -20,6 +20,10 @@ coverage.xml
 .pytest_cache
 .hypothesis
 
+# 2GIS persisted tokens (sensitive)
+.2gis_tokens.json
+data/
+
 # Virtual environments
 .env
 .venv

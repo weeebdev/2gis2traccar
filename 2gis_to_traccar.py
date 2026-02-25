@@ -8,8 +8,11 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime
-from typing import Dict, Any, Optional
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, Any, Optional, Tuple
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import aiohttp
 import websockets
@@ -17,7 +20,8 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from config import (
     TWOGIS_WS_URL, TRACCAR_BASE_URL, LOG_LEVEL, LOG_FILE,
-    WEBHOOK_URL, WEBHOOK_TOKEN, WEBHOOK_TABLE_NAME
+    WEBHOOK_URL, WEBHOOK_TOKEN, WEBHOOK_TABLE_NAME,
+    TWOGIS_REFRESH_TOKEN, TWOGIS_AUTH_REFRESH_URL, TWOGIS_TOKEN_FILE,
 )
 
 # Setup logging
@@ -186,20 +190,231 @@ class WebhookClient:
             return False
 
 
+def _parse_set_cookie_header(header: str) -> Dict[str, str]:
+    """Parse Set-Cookie header: name=value; Max-Age=...; Path=... etc."""
+    cookies = {}
+    main_part = header.split(";")[0].strip()
+    if "=" in main_part:
+        name, _, value = main_part.partition("=")
+        name = name.strip()
+        if name:
+            cookies[name] = value.strip()
+    return cookies
+
+
+def _parse_set_cookie_expiry(header: str) -> Optional[int]:
+    """Parse Max-Age or Expires from Set-Cookie. Returns seconds until expiry, or None."""
+    from email.utils import parsedate_to_datetime
+    parts = [p.strip() for p in header.split(";")[1:]]
+    max_age = None
+    expires = None
+    for part in parts:
+        if part.lower().startswith("max-age="):
+            try:
+                max_age = int(part.split("=", 1)[1].strip())
+            except (ValueError, IndexError):
+                pass
+        elif part.lower().startswith("expires="):
+            try:
+                date_str = part.split("=", 1)[1].strip()
+                expires = parsedate_to_datetime(date_str)
+            except (ValueError, IndexError, TypeError):
+                pass
+    if max_age is not None:
+        return max_age
+    if expires is not None:
+        now = datetime.now(expires.tzinfo) if expires.tzinfo else datetime.now(timezone.utc)
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        return max(0, int((expires - now).total_seconds()))
+    return None
+
+
+def _parse_all_set_cookies(response_headers) -> Dict[str, str]:
+    """Parse all Set-Cookie headers from response."""
+    cookies = {}
+    for value in response_headers.getall("Set-Cookie", []):
+        parsed = _parse_set_cookie_header(value)
+        cookies.update(parsed)
+    return cookies
+
+
+def _parse_expiry_from_set_cookies(response_headers) -> Optional[int]:
+    """Get expiry seconds from Set-Cookie headers (Max-Age or Expires)."""
+    for value in response_headers.getall("Set-Cookie", []):
+        expiry = _parse_set_cookie_expiry(value)
+        if expiry is not None:
+            return expiry
+    return None
+
+
+def _build_ws_url_with_token(base_ws_url: str, token: str) -> str:
+    """Replace token in WebSocket URL."""
+    parsed = urlparse(base_ws_url)
+    params = parse_qs(parsed.query)
+    params["token"] = [token]
+    new_query = urlencode(params, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
+
+
+class TwoGisAuthClient:
+    """Client for refreshing 2GIS auth tokens via /_/auth/refresh. Access token comes from refresh response."""
+
+    def __init__(
+        self,
+        refresh_url: str,
+        refresh_token: str,
+        token_file: Optional[str] = None,
+    ):
+        self.refresh_url = refresh_url
+        self.refresh_token = refresh_token
+        self.access_token: Optional[str] = None  # Obtained from refresh response
+        self.token_file = Path(token_file) if token_file else None
+        self.session: Optional[aiohttp.ClientSession] = None
+        self._next_refresh_in_seconds: Optional[int] = 3000  # Default 50 min if no expiry in response
+
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+
+    def _load_tokens_from_file(self) -> bool:
+        """Load refresh_token, access_token from file. Returns True if loaded."""
+        if not self.token_file or not self.token_file.exists():
+            return False
+        try:
+            data = json.loads(self.token_file.read_text())
+            r = data.get("dg5_auth_refresh_token")
+            a = data.get("dg5_auth_access_token")
+            if r:
+                self.refresh_token = r
+                if a:
+                    self.access_token = a
+                return True
+        except Exception as e:
+            logger.debug(f"Could not load tokens from file: {e}")
+        return False
+
+    def _save_tokens_to_file(self, refresh_token: str, access_token: Optional[str]):
+        """Persist tokens to file."""
+        if not self.token_file or not access_token:
+            return
+        try:
+            self.token_file.parent.mkdir(parents=True, exist_ok=True)
+            self.token_file.write_text(
+                json.dumps(
+                    {
+                        "dg5_auth_refresh_token": refresh_token,
+                        "dg5_auth_access_token": access_token,
+                    },
+                    indent=2,
+                )
+            )
+            logger.debug(f"Saved refreshed tokens to {self.token_file}")
+        except Exception as e:
+            logger.warning(f"Could not save tokens to file: {e}")
+
+    def get_next_refresh_seconds(self) -> int:
+        """Seconds to wait before next refresh (from cookie expiry, or default 50 min)."""
+        return self._next_refresh_in_seconds or 3000
+
+    async def refresh(self) -> Optional[str]:
+        """
+        Call 2GIS auth refresh endpoint. Returns new access token or None.
+        Access token comes from refresh response. Updates _next_refresh_in_seconds from cookie expiry.
+        """
+        if not self.session:
+            logger.error("Auth session not initialized")
+            return None
+
+        cookies: Dict[str, str] = {"dg5_auth_refresh_token": self.refresh_token}
+        if self.access_token:
+            cookies["dg5_auth_access_token"] = self.access_token
+
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "accept-language": "en-US,en;q=0.9,ru;q=0.8",
+            "cache-control": "no-cache",
+            "content-length": "0",
+            "origin": "https://2gis.kz",
+            "referer": "https://2gis.kz/almaty",
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+        }
+
+        try:
+            async with self.session.post(
+                self.refresh_url,
+                headers=headers,
+                cookies=cookies,
+            ) as resp:
+                new_cookies = _parse_all_set_cookies(resp.headers)
+                new_refresh = new_cookies.get("dg5_auth_refresh_token")
+                new_access = new_cookies.get("dg5_auth_access_token")
+
+                if new_refresh:
+                    self.refresh_token = new_refresh
+                    logger.info("Refreshed dg5_auth_refresh_token")
+                if new_access:
+                    self.access_token = new_access
+                    logger.info("Refreshed dg5_auth_access_token")
+
+                if new_refresh or new_access:
+                    self._save_tokens_to_file(self.refresh_token, self.access_token)
+
+                # Parse expiry from Set-Cookie; refresh at 80% of lifetime
+                expiry = _parse_expiry_from_set_cookies(resp.headers)
+                if expiry is not None:
+                    self._next_refresh_in_seconds = int(expiry * 0.8)
+                    logger.debug(f"Next refresh in {self._next_refresh_in_seconds}s (from cookie expiry)")
+
+                return self.access_token
+        except Exception as e:
+            logger.error(f"Auth refresh failed: {e}")
+            return None
+
+
 class TwoGISWebSocketClient:
     """Client for connecting to 2GIS WebSocket"""
-    
-    def __init__(self, ws_url: str, traccar_client: TraccarClient, webhook_client: Optional[WebhookClient] = None):
-        self.ws_url = ws_url
+
+    def __init__(
+        self,
+        ws_url: str,
+        traccar_client: TraccarClient,
+        webhook_client: Optional[WebhookClient] = None,
+        auth_client: Optional[TwoGisAuthClient] = None,
+    ):
+        self.base_ws_url = ws_url
         self.traccar_client = traccar_client
         self.webhook_client = webhook_client
+        self.auth_client = auth_client
         self.websocket = None
         self.running = False
-    
+
+    def _get_ws_url(self) -> Optional[str]:
+        """Get WebSocket URL. When using auth, injects access token from refresh. Returns None if no token."""
+        if self.auth_client:
+            if not self.auth_client.access_token:
+                return None
+            return _build_ws_url_with_token(self.base_ws_url, self.auth_client.access_token)
+        return self.base_ws_url
+
     async def connect(self):
-        """Connect to 2GIS WebSocket"""
+        """Connect to 2GIS WebSocket. When using refresh, gets access token and injects into URL before connecting."""
+        if self.auth_client:
+            new_token = await self.auth_client.refresh()
+            if not new_token:
+                logger.error("Token refresh failed, cannot connect")
+                return False
+            logger.info("Token refreshed before connect")
+        ws_url = self._get_ws_url()
+        if not ws_url:
+            logger.error("No WebSocket URL (missing access token)")
+            return False
         try:
-            self.websocket = await websockets.connect(self.ws_url)
+            self.websocket = await websockets.connect(ws_url)
             logger.info("Connected to 2GIS WebSocket")
             return True
         except Exception as e:
@@ -304,20 +519,36 @@ class TwoGISWebSocketClient:
         except Exception as e:
             logger.error(f"Error handling message: {e}")
     
+    async def _periodic_refresh_task(self):
+        """Background task to refresh token periodically (interval from cookie Max-Age/Expires)."""
+        while self.running and self.auth_client:
+            delay = self.auth_client.get_next_refresh_seconds()
+            logger.debug(f"Next token refresh in {delay}s")
+            await asyncio.sleep(delay)
+            if not self.running:
+                break
+            new_token = await self.auth_client.refresh()
+            if new_token:
+                logger.info("Periodic token refresh completed")
+
     async def run(self):
         """Main run loop"""
         if not await self.connect():
             return
-        
+
         self.running = True
         logger.info("Starting 2GIS to Traccar bridge...")
-        
+
+        refresh_task = None
+        if self.auth_client:
+            refresh_task = asyncio.create_task(self._periodic_refresh_task())
+
         try:
             async for message in self.websocket:
                 if not self.running:
                     break
                 await self.handle_message(message)
-                
+
         except ConnectionClosed:
             logger.warning("WebSocket connection closed")
         except WebSocketException as e:
@@ -325,6 +556,13 @@ class TwoGISWebSocketClient:
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
         finally:
+            self.running = False
+            if refresh_task:
+                refresh_task.cancel()
+                try:
+                    await refresh_task
+                except asyncio.CancelledError:
+                    pass
             await self.disconnect()
     
     async def disconnect(self):
@@ -335,10 +573,35 @@ class TwoGISWebSocketClient:
             logger.info("Disconnected from 2GIS WebSocket")
 
 
+@asynccontextmanager
+async def _optional_auth_context(auth_client: Optional[TwoGisAuthClient]):
+    """Async context manager that enters auth_client if present, else yields None."""
+    if auth_client is None:
+        yield None
+    else:
+        async with auth_client:
+            yield auth_client
+
+
+def _create_auth_client() -> Optional[TwoGisAuthClient]:
+    """Create TwoGisAuthClient if refresh token is configured. Access token comes from refresh only."""
+    if not TWOGIS_REFRESH_TOKEN:
+        return None
+    auth = TwoGisAuthClient(
+        refresh_url=TWOGIS_AUTH_REFRESH_URL,
+        refresh_token=TWOGIS_REFRESH_TOKEN,
+        token_file=TWOGIS_TOKEN_FILE,
+    )
+    auth._load_tokens_from_file()
+    if auth.access_token:
+        logger.info("Loaded tokens from file")
+    return auth
+
+
 async def main():
     """Main function"""
     logger.info("Starting 2GIS to Traccar bridge...")
-    
+
     # Initialize webhook client if configured
     webhook_client = None
     if WEBHOOK_URL and WEBHOOK_TOKEN:
@@ -346,16 +609,26 @@ async def main():
         logger.info(f"Webhook configured: {WEBHOOK_URL} (table: {WEBHOOK_TABLE_NAME})")
     else:
         logger.info("Webhook not configured, skipping webhook functionality")
-    
+
+    auth_client = _create_auth_client()
+    if auth_client:
+        logger.info("Token refresh enabled")
+
     # Initialize Traccar client (no authentication needed with OsmAnd protocol)
     async with TraccarClient(TRACCAR_BASE_URL) as traccar_client:
-        # Initialize webhook client if configured
-        if webhook_client:
-            async with webhook_client:
-                # Initialize and run 2GIS WebSocket client
-                client = TwoGISWebSocketClient(TWOGIS_WS_URL, traccar_client, webhook_client)
-                
-                # Keep trying to connect and run
+        async with _optional_auth_context(auth_client) as auth:
+            if webhook_client:
+                async with webhook_client:
+                    client = TwoGISWebSocketClient(TWOGIS_WS_URL, traccar_client, webhook_client, auth)
+                    while True:
+                        try:
+                            await client.run()
+                        except Exception as e:
+                            logger.error(f"Error in main loop: {e}")
+                            logger.info("Retrying in 30 seconds...")
+                            await asyncio.sleep(30)
+            else:
+                client = TwoGISWebSocketClient(TWOGIS_WS_URL, traccar_client, auth_client=auth)
                 while True:
                     try:
                         await client.run()
@@ -363,18 +636,6 @@ async def main():
                         logger.error(f"Error in main loop: {e}")
                         logger.info("Retrying in 30 seconds...")
                         await asyncio.sleep(30)
-        else:
-            # Initialize and run 2GIS WebSocket client without webhook
-            client = TwoGISWebSocketClient(TWOGIS_WS_URL, traccar_client)
-            
-            # Keep trying to connect and run
-            while True:
-                try:
-                    await client.run()
-                except Exception as e:
-                    logger.error(f"Error in main loop: {e}")
-                    logger.info("Retrying in 30 seconds...")
-                    await asyncio.sleep(30)
 
 
 if __name__ == "__main__":

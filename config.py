@@ -21,11 +21,19 @@ def validate_required_env(env_var, description):
         sys.exit(1)
     return value
 
-# 2GIS WebSocket Configuration
+# 2GIS WebSocket Configuration (base URL without token - token injected from refresh)
 TWOGIS_WS_URL = validate_required_env(
-    "TWOGIS_WS_URL", 
-    "2GIS WebSocket URL with authentication token"
+    "TWOGIS_WS_URL",
+    "2GIS WebSocket base URL (no token - injected from refresh)"
 )
+
+# 2GIS Auth Refresh (required - access token from refresh, interval from cookie expiry)
+TWOGIS_REFRESH_TOKEN = validate_required_env(
+    "TWOGIS_REFRESH_TOKEN",
+    "2GIS refresh token (dg5_auth_refresh_token from browser cookies)"
+)
+TWOGIS_AUTH_REFRESH_URL = os.getenv("TWOGIS_AUTH_REFRESH_URL", "https://2gis.kz/_/auth/refresh")
+TWOGIS_TOKEN_FILE = os.getenv("TWOGIS_TOKEN_FILE", ".2gis_tokens.json")
 
 # Traccar Server Configuration
 # Use OsmAnd protocol - no authentication needed!
