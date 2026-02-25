@@ -35,3 +35,7 @@ services:
 networks:
   2gis2traccar_network:
     driver: bridge
+
+volumes:
+  logs:
+  data:
