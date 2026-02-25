@@ -21,9 +21,9 @@ services:
       - MAX_RECONNECT_ATTEMPTS=${MAX_RECONNECT_ATTEMPTS:-10}
     volumes:
       # Mount logs directory for persistence
-      - logs
+      - logs:/app/logs
       # Mount data for token persistence (when using refresh)
-      - data
+      - data:/app/data
       # Mount config file for easy editing
       # - ./config.py:/app/config.py
     networks:
