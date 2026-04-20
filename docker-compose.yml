@@ -11,7 +11,7 @@ services:
       - TRACCAR_BASE_URL=${TRACCAR_BASE_URL}
       - TWOGIS_REFRESH_TOKEN=${TWOGIS_REFRESH_TOKEN}
       - TWOGIS_AUTH_REFRESH_URL=${TWOGIS_AUTH_REFRESH_URL:-https://2gis.kz/_/auth/refresh}
-      - TWOGIS_TOKEN_FILE=${TWOGIS_TOKEN_FILE:-/app/.2gis_tokens.json}
+      - TWOGIS_TOKEN_FILE=${TWOGIS_TOKEN_FILE:-/srv/2gis2traccar/.2gis_tokens.json}
       - WEBHOOK_URL=${WEBHOOK_URL}
       - WEBHOOK_TOKEN=${WEBHOOK_TOKEN}
       - WEBHOOK_TABLE_NAME=${WEBHOOK_TABLE_NAME:-2gis_locations}
